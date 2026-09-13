@@ -535,8 +535,14 @@ def main(argv=None):
     d = sub.add_parser("draft", help="draft a scenario from free text via a local offline LLM (optional)")
     d.add_argument("name", help="scenario id to create (scenarios/<name>.yaml)")
     d.add_argument("--describe", required=True, metavar="TEXT", help="free-text process description")
-    d.add_argument("--model", default="llama3.1:8b", help="local model name")
-    d.add_argument("--endpoint", default="http://localhost:11434", help="Ollama or OpenAI-compatible URL")
+    d.add_argument("--model", default="llama3.1:8b",
+                    help="local model name (default: llama3.1:8b); pass a Claude "
+                         "model id (e.g. claude-sonnet-5) when using --endpoint "
+                         "https://api.anthropic.com")
+    d.add_argument("--endpoint", default="http://localhost:11434",
+                    help="Ollama or OpenAI-compatible URL (default: offline, local "
+                         "Ollama); or https://api.anthropic.com for the Claude API "
+                         "(requires ANTHROPIC_API_KEY)")
     d.add_argument("--rag", action="store_true", help="ground the draft on the closest existing scenario")
     d.add_argument("--force", action="store_true", help="overwrite if it exists")
     d.set_defaults(func=cmd_draft)

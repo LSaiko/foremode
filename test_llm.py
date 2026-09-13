@@ -2,10 +2,18 @@
 Run: python test_llm.py   (or pytest)
 """
 import json
+import os
 import tempfile
 from pathlib import Path
 
 import llm
+
+# Other tests in this file monkeypatch llm._call_runtime (module-level, never
+# restored) to stub out draft_scenario's network call. Capture the real
+# function here, before any test can clobber it, so the _call_runtime-level
+# tests below still exercise the genuine implementation regardless of test
+# execution order.
+_REAL_CALL_RUNTIME = llm._call_runtime
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +203,114 @@ def test_empty_description_raises():
         assert False, "Expected ValueError"
     except ValueError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# _call_runtime — Claude branch (mocks urllib.request.urlopen directly,
+# since this is testing _call_runtime itself rather than draft_scenario)
+# ---------------------------------------------------------------------------
+
+class _FakeHTTPResponse:
+    """Minimal stand-in for the context-manager object urlopen() returns."""
+
+    def __init__(self, payload: dict):
+        self._body = json.dumps(payload).encode()
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+
+def test_call_runtime_claude_branch():
+    """A https://api.anthropic.com endpoint must POST to /v1/messages with the
+    Anthropic headers/body shape, and return content[0].text unparsed."""
+    captured = {}
+
+    def _fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["headers"] = {k.lower(): v for k, v in req.headers.items()}
+        captured["body"] = json.loads(req.data.decode())
+        captured["timeout"] = timeout
+        return _FakeHTTPResponse({"content": [{"type": "text", "text": '{"ok": true}'}]})
+
+    old_urlopen = llm.urllib.request.urlopen
+    old_key = os.environ.get("ANTHROPIC_API_KEY")
+    os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test-key"
+    llm.urllib.request.urlopen = _fake_urlopen
+    try:
+        result = _REAL_CALL_RUNTIME(
+            "https://api.anthropic.com", "claude-sonnet-5", "sys prompt", "user prompt"
+        )
+    finally:
+        llm.urllib.request.urlopen = old_urlopen
+        if old_key is None:
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+        else:
+            os.environ["ANTHROPIC_API_KEY"] = old_key
+
+    assert result == '{"ok": true}', "must return content[0].text unparsed"
+    assert captured["url"] == "https://api.anthropic.com/v1/messages"
+    assert captured["headers"]["x-api-key"] == "sk-ant-test-key"
+    assert captured["headers"]["anthropic-version"] == "2023-06-01"
+    assert captured["headers"]["content-type"] == "application/json"
+    assert captured["body"]["model"] == "claude-sonnet-5"
+    assert captured["body"]["max_tokens"] == 4096
+    assert "temperature" not in captured["body"], "claude-sonnet-5 rejects temperature"
+    assert captured["body"]["system"] == "sys prompt"
+    assert captured["body"]["messages"] == [{"role": "user", "content": "user prompt"}]
+
+
+def test_call_runtime_claude_endpoint_path_not_doubled():
+    """A caller-supplied endpoint that already includes /v1/messages must not
+    have the path appended twice."""
+    captured = {}
+
+    def _fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        return _FakeHTTPResponse({"content": [{"type": "text", "text": "{}"}]})
+
+    old_urlopen = llm.urllib.request.urlopen
+    old_key = os.environ.get("ANTHROPIC_API_KEY")
+    os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test-key"
+    llm.urllib.request.urlopen = _fake_urlopen
+    try:
+        _REAL_CALL_RUNTIME(
+            "https://api.anthropic.com/v1/messages", "claude-sonnet-5", "sys", "user"
+        )
+    finally:
+        llm.urllib.request.urlopen = old_urlopen
+        if old_key is None:
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+        else:
+            os.environ["ANTHROPIC_API_KEY"] = old_key
+
+    assert captured["url"] == "https://api.anthropic.com/v1/messages"
+
+
+def test_call_runtime_claude_missing_api_key_raises_before_network():
+    """Missing ANTHROPIC_API_KEY must raise (not an opaque 401) before any
+    network call is attempted."""
+    def _fake_urlopen(req, timeout=None):
+        raise AssertionError("urlopen must not be called when ANTHROPIC_API_KEY is unset")
+
+    old_urlopen = llm.urllib.request.urlopen
+    old_key = os.environ.pop("ANTHROPIC_API_KEY", None)
+    llm.urllib.request.urlopen = _fake_urlopen
+    try:
+        try:
+            _REAL_CALL_RUNTIME("https://api.anthropic.com", "claude-sonnet-5", "sys", "user")
+            assert False, "Expected ValueError for missing ANTHROPIC_API_KEY"
+        except ValueError:
+            pass
+    finally:
+        llm.urllib.request.urlopen = old_urlopen
+        if old_key is not None:
+            os.environ["ANTHROPIC_API_KEY"] = old_key
 
 
 # ---------------------------------------------------------------------------

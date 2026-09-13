@@ -18,6 +18,7 @@ Requires: openpyxl, PyYAML  (+ python-docx, reportlab for --format docx/pdf/all)
 """
 
 import argparse
+import json
 import sys
 from datetime import date
 from pathlib import Path
@@ -108,6 +109,49 @@ def get_action_priority(s, o, d):
     return "L", "Lower severity with adequate controls"
 
 
+# --- gauge / GR&R detection cross-check (bridge to grr-analysis-tool) ------
+def suggest_detection(gauge_json):
+    """Return (suggested_D, rationale) from a grr-analysis-tool gage-study JSON summary.
+
+    NOTE: like get_action_priority, this is a documented, deliberate SIMPLIFICATION
+    of the full MSA statistical treatment (%GRR, NDC study design, AIAG MSA-4
+    acceptance bands) into a 4-bucket lookup -- transparent and auditable, not a
+    replacement for the gage study. It is a CROSS-CHECK signal only: the
+    engineer's manually-entered D in `ratings` always wins; `check` just flags
+    large disagreement as a WARNING, it never overwrites the manual rating.
+    """
+    metrics = gauge_json["metrics"]
+    status = metrics["status"]
+    ndc = metrics.get("ndc")
+    if status == "ACCEPTABLE":
+        if isinstance(ndc, int) and ndc >= 5:
+            return 2, "measurement system acceptable, adequate discrimination (ndc>=5)"
+        return 4, "measurement system acceptable but ndc<5 -- discrimination may be too coarse to trust fully"
+    if status == "MARGINAL":
+        return 6, "measurement system marginal -- moderate detection risk"
+    if status == "UNACCEPTABLE":
+        return 8, "measurement system unacceptable -- treat detection control as unreliable"
+    raise ValueError(f"unrecognized gage study status: {status!r}")
+
+
+def _load_gauge(ref, base_dir):
+    """Load a grr-analysis-tool `--json` gage-study export. Returns (data, error|None).
+
+    Never raises: a missing/malformed gauge_ref must not break `check` or
+    `generate` -- it is reported as a warning (check) or silently left blank
+    (the Sheet 5 column), never a crash.
+    """
+    p = Path(ref)
+    if not p.is_absolute():
+        p = Path(base_dir or ".") / p
+    try:
+        return json.loads(p.read_text(encoding="utf-8")), None
+    except FileNotFoundError:
+        return None, f"WARNING: gauge_ref not found: {p}"
+    except (OSError, ValueError) as e:
+        return None, f"WARNING: gauge_ref unreadable ({p}): {e}"
+
+
 # --- scenario loading ------------------------------------------------------
 def scenario_dirs():
     """Where to look for scenarios: ./scenarios (user's own) then the bundled set."""
@@ -190,29 +234,60 @@ def _table_sheet(wb, name, title, columns, rows, footer, sev_col=None):
     autofit(ws)
     return ws
 
-def build_risk_sheet(wb, sc, footer):
+def build_risk_sheet(wb, sc, footer, base_dir=None):
     ws = wb.create_sheet("5. Risk Rating")
-    ws.merge_cells("A1:G1")
+    failures = sc.get("failures", [])
+    gauge_col = any(f.get("gauge_ref") for f in failures)
+    max_col = 8 if gauge_col else 7
+
+    # Pre-compute the gauge-suggested D (with source) for rows that opted in via
+    # `gauge_ref`, positionally matched to `ratings` (see validate_scenario note).
+    # A missing/malformed gauge_ref is left blank here -- `check` is where it's
+    # reported as a warning, `generate` must never crash over it.
+    gauge_labels = [None] * len(sc["ratings"])
+    if gauge_col:
+        for i, f in enumerate(failures):
+            ref = f.get("gauge_ref")
+            if not ref or i >= len(gauge_labels):
+                continue
+            gauge, err = _load_gauge(ref, base_dir)
+            if err:
+                continue
+            try:
+                d, _ = suggest_detection(gauge)
+            except (KeyError, ValueError):
+                continue
+            metrics = gauge.get("metrics", {})
+            char = gauge.get("characteristic") or Path(ref).name
+            gauge_labels[i] = f"{d} (ndc={metrics.get('ndc')}, {metrics.get('status')}, {char})"
+
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
     t = ws.cell(row=1, column=1, value="AIAG-VDA 2019 Action Priority (AP) -- NOT Traditional RPN")
     t.font = Font(name="Arial", bold=True, size=12, color=WHITE); t.fill, t.alignment = color_fill(NAVY), center()
-    ws.merge_cells("A2:G4")
+    ws.merge_cells(start_row=2, start_column=1, end_row=4, end_column=max_col)
     n = ws.cell(row=2, column=1, value=sc["risk_note"])
     n.font = Font(name="Arial", size=10, italic=True); n.fill = color_fill("FFF2CC")
     n.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
     ws.row_dimensions[2].height = 70
-    ws.merge_cells("A5:G5")
+    ws.merge_cells(start_row=5, start_column=1, end_row=5, end_column=max_col)
     sub = ws.cell(row=5, column=1,
         value="AP Lookup: S9-10+D7-10->H | S9-10+D4-6+O>=4->H | S7-8+D7-10+O>=4->H | All others->M or L")
     sub.font = Font(name="Arial", size=9, bold=True, color=NAVY); sub.fill, sub.alignment = color_fill("D9E1F2"), center()
     ws.row_dimensions[6].height = 8
-    write_section_title(ws, 7, "STEP 5 - Risk Rating  |  AIAG-VDA Action Priority Table", 7)
+    write_section_title(ws, 7, "STEP 5 - Risk Rating  |  AIAG-VDA Action Priority Table", max_col)
     cols = ["Failure Mode", "S (Severity\n1-10)", "O (Occurrence\n1-10)", "D (Detection\n1-10)",
             "Action\nPriority", "AP Rationale", "Legacy RPN\n(Reference Only)"]
+    if gauge_col:
+        cols = cols + ["Gauge-Suggested D (source)"]
     apply_header_row(ws, 8, cols); ws.row_dimensions[8].height = 35
-    for i, (fm, s, o, d) in enumerate((tuple(r) for r in sc["ratings"]), start=9):
+    for idx, (fm, s, o, d) in enumerate(tuple(r) for r in sc["ratings"]):
+        i = idx + 9
         ap, rationale = get_action_priority(s, o, d)
         base = gray_fill() if i % 2 == 0 else white_fill()
-        for ci, val in enumerate([fm, s, o, d, ap, rationale, s * o * d], start=1):
+        vals = [fm, s, o, d, ap, rationale, s * o * d]
+        if gauge_col:
+            vals.append(gauge_labels[idx] or "")
+        for ci, val in enumerate(vals, start=1):
             c = ws.cell(row=i, column=ci, value=val)
             c.font, c.border = body_font(bold=(ci == 5)), thin_border()
             c.alignment = center(True) if ci in (2, 3, 4, 5, 7) else left()
@@ -223,7 +298,7 @@ def build_risk_sheet(wb, sc, footer):
                 c.fill = base; c.font = Font(name="Arial", size=9, italic=True, color="808080")
             else:
                 c.fill = base
-    write_footer(ws, len(sc["ratings"]) + 10, 7, footer); autofit(ws)
+    write_footer(ws, len(sc["ratings"]) + 10, max_col, footer); autofit(ws)
     ws.column_dimensions["F"].width = 45
     return ws
 
@@ -311,7 +386,7 @@ def build_iso14971_sheet(wb, sc, footer):
     return ws
 
 
-def build_workbook(sc, iso14971=False):
+def build_workbook(sc, iso14971=False, base_dir=None):
     wb = Workbook(); wb.remove(wb.active)
     footer = sc["footer"]
     pn = sc["process_name"]
@@ -333,7 +408,7 @@ def build_workbook(sc, iso14971=False):
                  [(f["step"], f["mode"], f["effect"], f["severity"], f["cause"],
                    f["prevention"], f["detection"]) for f in sc["failures"]],
                  footer, sev_col=3)
-    build_risk_sheet(wb, sc, footer)
+    build_risk_sheet(wb, sc, footer, base_dir=base_dir)
     build_optimization_sheet(wb, sc, footer)
     build_results_sheet(wb, sc, footer)
     if iso14971:
@@ -387,6 +462,10 @@ failures:                    # severity is an integer 1-10
     cause: "Root cause"
     prevention: "Current prevention control"
     detection: "Current detection control"
+    # gauge_ref: "grr_exports/process_step_a_grr.json"  # optional: bridge to
+    #   grr-analysis-tool's `--json` gage-study export. `check` cross-checks
+    #   the gauge-suggested D against the manual D below (this never overrides
+    #   it -- see docs/detection-bridge.md).
 
 risk_note: >-
   Why Action Priority (not RPN) matters for this process / device.
@@ -412,8 +491,12 @@ REQUIRED_KEYS = ["process_name", "scope", "structure", "function",
                  "failures", "risk_note", "ratings", "actions", "results"]
 
 
-def validate_scenario(sc):
-    """Return a list of human-readable errors ([] means valid)."""
+def validate_scenario(sc, base_dir=None):
+    """Return a list of human-readable errors ([] means valid).
+
+    `base_dir` (the scenario YAML's own directory) resolves any relative
+    `gauge_ref` paths; it defaults to the current directory.
+    """
     errs = []
     for k in REQUIRED_KEYS:
         if k not in sc:
@@ -444,6 +527,33 @@ def validate_scenario(sc):
                 errs.append(f"failures[{i}]: missing '{k}'")
         if "severity" in f and not (isinstance(f["severity"], int) and 1 <= f["severity"] <= 10):
             errs.append(f"failures[{i}] '{f.get('mode')}': severity must be int 1-10")
+
+    # gauge/GR&R cross-check: failures[i] <-> ratings[i] are already kept in
+    # lockstep by position across every scenario (same order, ratings just use
+    # a shorter mode label), so gauge_ref is correlated to its manual D by index.
+    ratings = sc["ratings"]
+    for i, f in enumerate(sc["failures"]):
+        gauge_ref = f.get("gauge_ref")
+        if not gauge_ref:
+            continue
+        gauge, err = _load_gauge(gauge_ref, base_dir)
+        if err:
+            errs.append(err)
+            continue
+        try:
+            suggested_d, rationale = suggest_detection(gauge)
+        except (KeyError, ValueError) as e:
+            errs.append(f"WARNING: gauge_ref '{gauge_ref}' for failures[{i}] '{f.get('mode')}': "
+                        f"malformed gauge JSON ({e})")
+            continue
+        if i >= len(ratings) or not (isinstance(ratings[i], list) and len(ratings[i]) == 4):
+            continue
+        manual_d = ratings[i][3]
+        if isinstance(manual_d, int) and abs(manual_d - suggested_d) > 2:
+            errs.append(
+                f"WARNING: failures[{i}] '{f.get('mode')}': manual D={manual_d} vs. "
+                f"gauge-suggested D={suggested_d} from {gauge_ref} ({rationale}) -- disagreement > 2, review"
+            )
     return errs
 
 
@@ -470,7 +580,7 @@ def cmd_new(args):
 
 def cmd_check(args):
     sc, path = load_scenario(args.scenario)
-    errs = validate_scenario(sc)
+    errs = validate_scenario(sc, base_dir=path.parent)
     fatal = [e for e in errs if not e.startswith("WARNING")]
     for e in errs:
         print(("  ! " if e.startswith("WARNING") else "  x ") + e)
@@ -497,7 +607,7 @@ def cmd_generate(args):
     base = Path(args.output) if args.output else Path(sc.get("output", path.stem))
     base = base.with_suffix("")
     base.parent.mkdir(parents=True, exist_ok=True)
-    wb = build_workbook(sc, iso14971=args.iso14971)
+    wb = build_workbook(sc, iso14971=args.iso14971, base_dir=path.parent)
     xlsx = base.with_suffix(".xlsx"); wb.save(xlsx); print(f"wrote {xlsx}")
     if args.format in ("docx", "pdf", "all"):
         import export

@@ -1,5 +1,32 @@
 """Self-checks for the pFMEA engine. Run: python test_pfmea.py  (or pytest)."""
+import json
+import tempfile
+from pathlib import Path
+
 import foremode
+
+
+def _base_sc(failure=None, rating=None):
+    """Minimal scenario dict satisfying REQUIRED_KEYS, with one optional
+    failure/rating pair for exercising the gauge cross-check."""
+    sc = {
+        "process_name": "Test Process",
+        "scope": [], "structure": [], "function": [],
+        "failures": [], "risk_note": "note",
+        "ratings": [], "actions": [],
+        "results": {"documents": [], "archive": ""},
+    }
+    if failure is not None:
+        sc["failures"] = [failure]
+        sc["ratings"] = [rating]
+    return sc
+
+
+def _write_gauge(tmp_path, status, ndc):
+    p = Path(tmp_path) / "grr_export.json"
+    p.write_text(json.dumps({"schema_version": 1, "metrics": {"status": status, "ndc": ndc}}),
+                 encoding="utf-8")
+    return p.name
 
 
 def test_action_priority_known_cases():
@@ -33,6 +60,43 @@ def test_all_scenarios_build():
         sc, _ = foremode.load_scenario(sid)
         wb = foremode.build_workbook(sc, iso14971=True)
         assert len(wb.worksheets) == 8   # 7 steps + ISO 14971 bridge
+
+
+def test_suggest_detection_lookup():
+    assert foremode.suggest_detection({"metrics": {"status": "ACCEPTABLE", "ndc": 6}})[0] == 2
+    assert foremode.suggest_detection({"metrics": {"status": "ACCEPTABLE", "ndc": 3}})[0] == 4
+    assert foremode.suggest_detection({"metrics": {"status": "MARGINAL", "ndc": 4}})[0] == 6
+    assert foremode.suggest_detection({"metrics": {"status": "UNACCEPTABLE", "ndc": 1}})[0] == 8
+
+
+def test_gauge_ref_disagreement_warns():
+    with tempfile.TemporaryDirectory() as tmp:
+        fname = _write_gauge(tmp, "UNACCEPTABLE", 2)   # suggested D=8
+        failure = {"step": "S", "mode": "M", "effect": "E", "severity": 8, "cause": "C",
+                   "prevention": "P", "detection": "D", "gauge_ref": fname}
+        sc = _base_sc(failure, ["M", 8, 3, 2])          # manual D=2, |2-8|=6 > 2
+        errs = foremode.validate_scenario(sc, base_dir=Path(tmp))
+        assert any(e.startswith("WARNING") and "gauge-suggested D=8" in e for e in errs)
+
+
+def test_gauge_ref_agreement_no_warning():
+    with tempfile.TemporaryDirectory() as tmp:
+        fname = _write_gauge(tmp, "ACCEPTABLE", 6)      # suggested D=2
+        failure = {"step": "S", "mode": "M", "effect": "E", "severity": 8, "cause": "C",
+                   "prevention": "P", "detection": "D", "gauge_ref": fname}
+        sc = _base_sc(failure, ["M", 8, 3, 3])          # manual D=3, |3-2|=1 <= 2
+        errs = foremode.validate_scenario(sc, base_dir=Path(tmp))
+        assert errs == []
+
+
+def test_gauge_ref_missing_file_skips_gracefully():
+    with tempfile.TemporaryDirectory() as tmp:
+        failure = {"step": "S", "mode": "M", "effect": "E", "severity": 8, "cause": "C",
+                   "prevention": "P", "detection": "D", "gauge_ref": "does_not_exist.json"}
+        sc = _base_sc(failure, ["M", 8, 3, 2])
+        errs = foremode.validate_scenario(sc, base_dir=Path(tmp))   # must not raise
+        assert any(e.startswith("WARNING") and "gauge_ref not found" in e for e in errs)
+        assert not any("gauge-suggested" in e for e in errs)
 
 
 if __name__ == "__main__":

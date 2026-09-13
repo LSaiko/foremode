@@ -6,6 +6,7 @@ Runtime support
 ---------------
   Ollama            http://localhost:11434/api/generate   (format: json)
   OpenAI-compat     http://*/v1/chat/completions          (response_format json_object)
+  Claude API        https://api.anthropic.com/v1/messages  (ANTHROPIC_API_KEY env var)
 
 Public API
 ----------
@@ -118,6 +119,7 @@ def _call_runtime(endpoint: str, model: str, system: str, user: str) -> str:
     """POST to the local LLM runtime and return the raw response string.
 
     Auto-detects API flavour from the endpoint path:
+      - contains 'anthropic.com' → Anthropic Claude Messages API
       - contains '/v1/chat/completions' → OpenAI-compatible
       - else → Ollama /api/generate
     """
@@ -127,7 +129,44 @@ def _call_runtime(endpoint: str, model: str, system: str, user: str) -> str:
     if not base.startswith(("http://", "https://")):
         raise ValueError(f"endpoint must be an http(s) URL, got: {endpoint!r}")
 
-    if "/v1/chat/completions" in base:
+    if "anthropic.com" in base:
+        # Anthropic Claude API — the one runtime here that isn't local/offline.
+        # Uses an already-issued API key from the environment; no new pip
+        # dependency (no `anthropic` package) — plain urllib like the other
+        # two branches.
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "ANTHROPIC_API_KEY environment variable is not set. Export an "
+                "already-issued Anthropic API key to use --endpoint "
+                "https://api.anthropic.com."
+            )
+        url = base if base.endswith("/v1/messages") else base + "/v1/messages"
+        payload = {
+            "model": model,
+            "max_tokens": 4096,
+            "system": system,
+            "messages": [{"role": "user", "content": user}],
+        }
+        body = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            url, data=body,
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            raw = json.loads(resp.read())
+        # Messages API response: content is a list of blocks; text blocks
+        # carry a "text" field. _SYSTEM_PROMPT already instructs the model to
+        # return only JSON (no forced-JSON mode exists in this API, unlike
+        # OpenAI's response_format).
+        return raw["content"][0]["text"]
+
+    elif "/v1/chat/completions" in base:
         # OpenAI-compatible (LM Studio, llama.cpp server, etc.)
         url = base if base.endswith("/v1/chat/completions") else base + "/v1/chat/completions"
         payload = {

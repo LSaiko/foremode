@@ -39,4 +39,4 @@ addopts = "--cov=foremode --cov=export --cov=llm --cov-report=term-missing"
 include = ["foremode.py", "export.py", "llm.py", "scenarios/*.yaml"]
 
 [tool.hatch.build.targets.sdist]
-include = ["foremode.py", "export.py", "llm.py", "scenarios/*.yaml", "docs", "README.md", "requirements.txt", "test_*.py", "golden_workbooks.json"]
+include = ["foremode.py", "export.py", "llm.py", "scenarios/*.yaml", "docs", "README.md", "requirements.txt", "test_*.py", "golden_workbooks.json", "schemas"]

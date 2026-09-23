@@ -20,7 +20,7 @@ Requires: openpyxl, PyYAML  (+ python-docx, reportlab for --format docx/pdf/all)
 import argparse
 import json
 import sys
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -386,6 +386,47 @@ def build_iso14971_sheet(wb, sc, footer):
     return ws
 
 
+def to_risk_records(sc, scenario_id):
+    """Additive evidence export for traceability-matrix-dhf.
+
+    Each record matches the DHF `RiskControl` contract (schemas/risk-control.schema.json)
+    so the payload's `risk_controls` list drops straight into a DhfProject. Mapping:
+    AIAG-VDA S/O (1-10) -> ISO 14971 severity/probability (1-5) via ceil(x/2);
+    hazard/harm reuse the iso14971 bridge fields, else the failure mode/effect.
+    residual_risk_acceptable stays null: acceptability is a QE decision, never ours.
+    """
+    if len(sc["failures"]) != len(sc["ratings"]):
+        raise ValueError("failures and ratings must pair 1:1 for evidence export")
+    actions = {a["mode"]: a["action"] for a in sc.get("actions", [])}
+    records = []
+    # failures[i] <-> ratings[i] by position (see validate_scenario note)
+    for i, (f, (label, s, o, d)) in enumerate(zip(sc["failures"], sc["ratings"]), start=1):
+        iso = f.get("iso14971", {})
+        control = f"Prevention: {f['prevention']}; Detection: {f['detection']}"
+        if label in actions:
+            control += f"; Planned action: {actions[label]}"
+        records.append({
+            "id": f"RC-{i}",
+            "hazard": iso.get("hazard") or f["mode"],
+            "hazardous_situation": iso.get("hazardous_situation", ""),
+            "harm": iso.get("harm") or f["effect"],
+            "severity": (s + 1) // 2,
+            "probability": (o + 1) // 2,
+            "control_measure": control,
+            "requirement_ids": [],
+            "verification_ids": [],
+            "residual_risk_acceptable": None,
+        })
+    return {
+        "source": "foremode",
+        "scenario_id": scenario_id,
+        "process_name": sc["process_name"],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "scale_note": "severity=ceil(AIAG-VDA S/2), probability=ceil(AIAG-VDA O/2); QE review REQUIRED",
+        "risk_controls": records,
+    }
+
+
 def build_workbook(sc, iso14971=False, base_dir=None):
     wb = Workbook(); wb.remove(wb.active)
     footer = sc["footer"]
@@ -609,6 +650,10 @@ def cmd_generate(args):
     base.parent.mkdir(parents=True, exist_ok=True)
     wb = build_workbook(sc, iso14971=args.iso14971, base_dir=path.parent)
     xlsx = base.with_suffix(".xlsx"); wb.save(xlsx); print(f"wrote {xlsx}")
+    if args.evidence:
+        out = base.with_suffix(".risk.json")
+        out.write_text(json.dumps(to_risk_records(sc, path.stem), indent=2), encoding="utf-8")
+        print(f"wrote {out}")
     if args.format in ("docx", "pdf", "all"):
         import export
         sheets = export.read_sheets(xlsx)
@@ -660,6 +705,8 @@ def main(argv=None):
     g.add_argument("scenario", help="scenario id (in scenarios/) or path to a .yaml")
     g.add_argument("--format", choices=["xlsx", "docx", "pdf", "all"], default="xlsx")
     g.add_argument("--iso14971", action="store_true", help="add ISO 14971 risk-bridge sheet")
+    g.add_argument("--evidence", action="store_true",
+                   help="also write <output>.risk.json (RiskControl records for traceability-matrix-dhf)")
     g.add_argument("-o", "--output", help="output basename (extension ignored)")
     g.set_defaults(func=cmd_generate)
     c = sub.add_parser("changelog")

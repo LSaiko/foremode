@@ -1,0 +1,78 @@
+{
+  "additionalProperties": false,
+  "description": "ISO 14971 hazard -> hazardous situation -> harm, with the control traced to requirements.",
+  "properties": {
+    "id": {
+      "pattern": "^RC-\\d+$",
+      "title": "Id",
+      "type": "string"
+    },
+    "hazard": {
+      "minLength": 1,
+      "title": "Hazard",
+      "type": "string"
+    },
+    "hazardous_situation": {
+      "default": "",
+      "title": "Hazardous Situation",
+      "type": "string"
+    },
+    "harm": {
+      "default": "",
+      "title": "Harm",
+      "type": "string"
+    },
+    "severity": {
+      "maximum": 5,
+      "minimum": 1,
+      "title": "Severity",
+      "type": "integer"
+    },
+    "probability": {
+      "maximum": 5,
+      "minimum": 1,
+      "title": "Probability",
+      "type": "integer"
+    },
+    "control_measure": {
+      "minLength": 1,
+      "title": "Control Measure",
+      "type": "string"
+    },
+    "requirement_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Requirement Ids",
+      "type": "array"
+    },
+    "verification_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Verification Ids",
+      "type": "array"
+    },
+    "residual_risk_acceptable": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Residual Risk Acceptable"
+    }
+  },
+  "required": [
+    "id",
+    "hazard",
+    "severity",
+    "probability",
+    "control_measure"
+  ],
+  "title": "RiskControl",
+  "type": "object"
+}

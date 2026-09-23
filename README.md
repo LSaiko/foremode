@@ -2,6 +2,8 @@
 
 *See the failure before it ships.*
 
+[![CI](https://github.com/LSaiko/foremode/actions/workflows/ci.yml/badge.svg)](https://github.com/LSaiko/foremode/actions/workflows/ci.yml)
+[![Coverage 75%+](https://img.shields.io/badge/coverage-75%25%2B-brightgreen)](.github/workflows/ci.yml)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 [![Standard: AIAG-VDA 2019](https://img.shields.io/badge/standard-AIAG--VDA%202019-darkblue)](https://www.aiag.org/)
 [![Regulatory: 21 CFR 820 | ISO 13485](https://img.shields.io/badge/regulatory-21%20CFR%20820%20%7C%20ISO%2013485-green)](https://www.fda.gov/medical-devices/quality-system-qs-regulationmedical-device-good-manufacturing-practices)
@@ -142,6 +144,32 @@ python foremode.py draft tyvek_seal --describe "heat-sealing Tyvek pouches for s
 # -> scenarios/tyvek_seal.yaml  (DRAFT — every S/O/D needs engineer review)
 ```
 
+### 6. (Optional) Risk evidence export for a Design History File
+
+```bash
+python foremode.py generate spinal_peek_cage --evidence
+# -> also writes <output>.risk.json next to the unchanged .xlsx
+```
+
+This is an additional output. The workbook it generates alongside is unchanged, and
+`test_golden.py` checks that. The JSON carries `source: "foremode"` and a
+`risk_controls` list. Each record matches the `RiskControl` model in
+[traceability-matrix-dhf](https://github.com/LSaiko/traceability-matrix-dhf), so the
+list loads directly into a `DhfProject`. The contract is vendored at
+[`schemas/risk-control.schema.json`](schemas/risk-control.schema.json).
+
+| pFMEA row | RiskControl field |
+|-----------|-------------------|
+| `failures[i].iso14971.hazard`, else failure mode | `hazard` |
+| `failures[i].iso14971.harm`, else effect | `harm` |
+| S (1-10) | `severity` = ceil(S/2), 1-5 |
+| O (1-10) | `probability` = ceil(O/2), 1-5 |
+| prevention + detection controls (+ planned action) | `control_measure` |
+| — | `residual_risk_acceptable: null` (a QE decides this, not the tool) |
+
+`requirement_ids` / `verification_ids` are left empty, so the links can be made on
+the DHF side.
+
 ---
 
 ## Requirements
@@ -226,7 +254,10 @@ foremode/
 ├── export.py                       # Word (.docx) + PDF renderer (also standalone)
 ├── llm.py                          # Optional offline LLM cold-start (used by `draft`)
 ├── pyproject.toml                  # Packaging — `pip install .` adds the `foremode` command
-├── test_foremode.py / test_llm.py     # Self-checks (python test_foremode.py)
+├── test_*.py                       # pytest suite (engine, LLM, golden output, evidence)
+├── golden_workbooks.json           # Pinned workbook fingerprints (python test_golden.py --update)
+├── schemas/risk-control.schema.json # Vendored traceability-matrix-dhf RiskControl contract
+├── .github/workflows/ci.yml        # CI: pytest + coverage floor on 3.9 / 3.13
 ├── scenarios/
 │   ├── cnc_femoral_stem.yaml       # Sample 1: CNC Ti-6Al-4V Femoral Stem (Class III)
 │   ├── spinal_peek_cage.yaml       # Sample 2: PEEK Injection Molded Spinal Cage (Class II)

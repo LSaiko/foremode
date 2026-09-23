@@ -22,6 +22,7 @@ dependencies = ["openpyxl>=3.1.2", "PyYAML>=6.0"]
 docs = ["python-docx>=1.1.0", "reportlab>=4.0.0"]   # Word / PDF export
 llm  = ["jsonschema>=4.21"]                          # offline LLM cold-start (HTTP via stdlib)
 all  = ["python-docx>=1.1.0", "reportlab>=4.0.0", "jsonschema>=4.21"]
+dev  = ["foremode[all]", "pytest>=8", "pytest-cov>=5"]
 
 [project.scripts]
 foremode = "foremode:main"
@@ -30,9 +31,12 @@ foremode = "foremode:main"
 Homepage = "https://github.com/LSaiko/foremode"
 Issues = "https://github.com/LSaiko/foremode/issues"
 
+[tool.pytest.ini_options]
+addopts = "--cov=foremode --cov=export --cov=llm --cov-report=term-missing"
+
 # Flat single-module layout: ship the modules + the bundled scenario library.
 [tool.hatch.build.targets.wheel]
 include = ["foremode.py", "export.py", "llm.py", "scenarios/*.yaml"]
 
 [tool.hatch.build.targets.sdist]
-include = ["foremode.py", "export.py", "llm.py", "scenarios/*.yaml", "docs", "README.md", "requirements.txt", "test_*.py"]
+include = ["foremode.py", "export.py", "llm.py", "scenarios/*.yaml", "docs", "README.md", "requirements.txt", "test_*.py", "golden_workbooks.json", "schemas"]

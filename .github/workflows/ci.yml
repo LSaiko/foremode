@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: pip install -e .[dev]
+      # coverage floor backs the README badge; raise both together
+      - run: pytest --cov-fail-under=75
+      - run: python foremode.py check cnc_femoral_stem && python foremode.py check spinal_peek_cage && python foremode.py check sterile_packaging

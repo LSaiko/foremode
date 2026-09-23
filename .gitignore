@@ -21,3 +21,4 @@ Thumbs.db
 
 # Private internal dev log — stays local, never pushed/public
 .devlog/
+.coverage
